@@ -1,13 +1,19 @@
 from typing import List, Optional
-
-from fastapi import APIRouter, Depends, HTTPException, status
+import os
+import uuid
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
 from pydantic import BaseModel
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import load_only
 from app.auth import get_current_user
 from app.db import get_db
+from app.minio import get_minio_client, MINIO_BUCKET
+from app.models import Media
 from app.models import FavouritePost, Post, Comment
+from io import BytesIO
+from minio.error import S3Error
+from datetime import datetime
 
 router = APIRouter()
 
@@ -17,9 +23,9 @@ BASE_API_PATH = "/api/blog"
 class PostBase(BaseModel):
     title: str
     content: str
-    short_description: Optional[str]
-    published: Optional[bool]
-    keywords: Optional[str]
+    short_description: Optional[str] = None
+    published: Optional[bool] = None
+    keywords: Optional[str] = None
 
 
 class PostCreate(PostBase):
@@ -28,8 +34,8 @@ class PostCreate(PostBase):
 
 class PostOut(PostBase):
     id: int
-    created_at: Optional[str]
-    updated_at: Optional[str]
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
     class Config:
         orm_mode = True
@@ -38,8 +44,8 @@ class PostOut(PostBase):
 class PostListOut(BaseModel):
     id: int
     title: str
-    created_at: Optional[str]
-    updated_at: Optional[str]
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
     class Config:
         orm_mode = True
@@ -56,8 +62,8 @@ class CommentCreate(CommentBase):
 class CommentOut(CommentBase):
     id: int
     post_id: int
-    created_at: Optional[str]
-    updated_at: Optional[str]
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
     class Config:
         orm_mode = True
@@ -295,3 +301,48 @@ async def remove_favorite(
     )
     await db.commit()
     return {"message": "Post usunięty z ulubionych"}
+
+
+@router.post(BASE_API_PATH + "/upload/", status_code=status.HTTP_201_CREATED)
+async def upload_media(
+    file: UploadFile = File(...),
+    post_id: int = Form(None),
+    db: AsyncSession = Depends(get_db),
+    minio_client=Depends(get_minio_client),
+):
+    allowed_extensions = {".jpg", ".jpeg", ".png", ".gif"}
+    ext = os.path.splitext(file.filename)[1].lower()
+    if ext not in allowed_extensions:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Niedozwolony format pliku: {ext}",
+        )
+
+    unique_filename = f"{uuid.uuid4()}{ext}"
+
+    try:
+        file_data = await file.read()
+        file_size = len(file_data)
+        file_stream = BytesIO(file_data)
+        minio_client.put_object(
+            MINIO_BUCKET,
+            unique_filename,
+            file_stream,
+            file_size,
+            content_type=file.content_type,
+        )
+    except S3Error as e:
+        print(e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Błąd podczas uploadu do MinIO",
+        )
+
+    media_url = f"http://localhost:9000/{MINIO_BUCKET}/{unique_filename}"
+
+    new_media = Media(post_id=post_id, file_path=unique_filename)
+    db.add(new_media)
+    await db.commit()
+    await db.refresh(new_media)
+
+    return {"url": media_url, "media_id": new_media.id}

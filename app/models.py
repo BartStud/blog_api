@@ -27,7 +27,8 @@ class Post(Base):
     published_at = Column(DateTime, nullable=True)
     keywords = Column(String, nullable=True)
     comments = relationship("Comment", back_populates="post", cascade="all, delete")
-    favorited_by = relationship("FavouritePost", back_populates="favorite_posts")
+    favorited_by = relationship("FavouritePost", back_populates="post")
+    media = relationship("Media", back_populates="post", cascade="all, delete")
 
 
 class Comment(Base):
@@ -46,4 +47,14 @@ class FavouritePost(Base):
     id = Column(Integer, primary_key=True, index=True)
     post_id = Column(Integer, ForeignKey("posts.id"))
     user_id = Column(String, nullable=False)
-    post = relationship("Post", back_populates="favourited_by")
+    post = relationship("Post", back_populates="favorited_by")
+
+
+class Media(Base):
+    __tablename__ = "media"
+    id = Column(Integer, primary_key=True, index=True)
+    post_id = Column(Integer, ForeignKey("posts.id"), nullable=True)
+    file_path = Column(String, nullable=False)
+    created_at = Column(DateTime, server_default=func.now())
+
+    post = relationship("Post", back_populates="media")
