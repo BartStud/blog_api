@@ -1,13 +1,25 @@
 from typing import List, Optional
 import os
 import uuid
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
+from elasticsearch import NotFoundError
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Query,
+    status,
+    UploadFile,
+    File,
+    Form,
+)
 from pydantic import BaseModel
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import load_only
 from app.auth import get_current_user
 from app.db import get_db
+from app.es.index import es_index_post, es_delete_post
+from app.main import get_es_instance
 from app.minio import get_minio_client, MINIO_BUCKET
 from app.models import Media
 from app.models import FavouritePost, Post, Comment
@@ -104,6 +116,9 @@ async def create_post(
     db.add(new_post)
     await db.commit()
     await db.refresh(new_post)
+
+    await es_index_post(new_post)
+
     return new_post
 
 
@@ -117,6 +132,7 @@ async def get_posts(_=Depends(get_current_user), db: AsyncSession = Depends(get_
     posts = result.scalars().all()
     return posts
 
+
 @router.get(BASE_API_PATH + "/posts/unpublished", response_model=List[PostListOut])
 async def get_unpublished_posts(
     user=Depends(get_current_user), db: AsyncSession = Depends(get_db)
@@ -128,6 +144,39 @@ async def get_unpublished_posts(
     )
     posts = result.scalars().all()
     return posts
+
+
+@router.get("/search", response_model=List[dict])
+async def search_posts(
+    query: Optional[str] = Query(None, description="Fraza wyszukiwania"), size: int = 10
+):
+    if not query:
+        raise HTTPException(status_code=400, detail="Parametr query jest wymagany")
+
+    search_body = {
+        "query": {
+            "multi_match": {
+                "query": query,
+                "fields": ["title^3", "short_description", "content"],
+            }
+        },
+        "size": size,
+    }
+
+    try:
+        es = get_es_instance()
+        res = es.search(index="posts", body=search_body)
+    except NotFoundError:
+        raise HTTPException(
+            status_code=404, detail="Indeks posts nie został znaleziony"
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Błąd wyszukiwania: {e}")
+
+    hits = res.get("hits", {}).get("hits", [])
+    results = [hit["_source"] for hit in hits]
+    return results
+
 
 @router.get(BASE_API_PATH + "/posts/{post_id}", response_model=PostOut)
 async def get_post(
@@ -165,6 +214,9 @@ async def update_post(
     post.published = post_update.published
     await db.commit()
     await db.refresh(post)
+
+    await es_index_post(post)
+
     return post
 
 
@@ -182,6 +234,9 @@ async def delete_post(
         raise HTTPException(status_code=404, detail="Post nie znaleziony")
     await db.delete(post)
     await db.commit()
+
+    await es_delete_post(post_id)
+
     return None
 
 
