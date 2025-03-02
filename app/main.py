@@ -2,7 +2,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from app.minio import init_minio_bucket
-from app.routers import blog
+from app.routers import blog, metrics
 from app.models import Base
 from app.db import engine
 from elasticsearch import AsyncElasticsearch
@@ -24,6 +24,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Blog", lifespan=lifespan)
 
 app.include_router(blog.router)
+app.include_router(metrics.router)
 
 es = AsyncElasticsearch(hosts=["http://elasticsearch:9200"])
 
