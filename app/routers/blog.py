@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import load_only
 from app.auth import get_current_user
 from app.db import get_db
+from app.keywords import generate_keywords
 from app.minio import get_minio_client, MINIO_BUCKET
 from app.models import Media
 from app.models import FavouritePost, Post, Comment
@@ -104,6 +105,9 @@ async def create_post(
     db.add(new_post)
     await db.commit()
     await db.refresh(new_post)
+
+    generate_keywords.delay(new_post.id, new_post.content)
+
     return new_post
 
 
