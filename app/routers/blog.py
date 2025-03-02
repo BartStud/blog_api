@@ -117,6 +117,17 @@ async def get_posts(_=Depends(get_current_user), db: AsyncSession = Depends(get_
     posts = result.scalars().all()
     return posts
 
+@router.get(BASE_API_PATH + "/posts/unpublished", response_model=List[PostListOut])
+async def get_unpublished_posts(
+    user=Depends(get_current_user), db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(
+        select(Post)
+        .options(load_only(Post.id, Post.title, Post.created_at, Post.updated_at))
+        .where(Post.published == False, Post.author_id == user["sub"])
+    )
+    posts = result.scalars().all()
+    return posts
 
 @router.get(BASE_API_PATH + "/posts/{post_id}", response_model=PostOut)
 async def get_post(
