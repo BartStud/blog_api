@@ -13,7 +13,7 @@ from fastapi import (
     Form,
 )
 from pydantic import BaseModel
-from sqlalchemy import or_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import load_only
 from app.auth import get_current_user
@@ -42,6 +42,13 @@ class PostBase(BaseModel):
 
 class PostCreate(PostBase):
     pass
+
+class PostPatch(BaseModel):
+    title: Optional[str] = None
+    content: Optional[str] = None
+    short_description: Optional[str] = None
+    keywords: Optional[str] = None
+    published: Optional[bool] = None
 
 
 class PostOut(PostBase):
@@ -121,32 +128,44 @@ async def create_post(
 
     return new_post
 
-
 @router.get(BASE_API_PATH + "/posts/", response_model=List[PostListOut])
-async def get_posts(_=Depends(get_current_user), db: AsyncSession = Depends(get_db)):
-    result = await db.execute(
-        select(Post)
-        .options(load_only(Post.id, Post.title, Post.created_at, Post.updated_at))
-        .where(Post.published == True)
-    )  # type: ignore
-    posts = result.scalars().all()
-    return posts
-
-
-@router.get(BASE_API_PATH + "/posts/unpublished", response_model=List[PostListOut])
-async def get_unpublished_posts(
-    user=Depends(get_current_user), db: AsyncSession = Depends(get_db)
+async def get_posts(
+    current_user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    published: Optional[bool] = Query(None, description="Filtruj po statusie opublikowania (true/false)"),
+    author_id: Optional[str] = Query(None, description="Filtruj po author_id")
 ):
-    result = await db.execute(
-        select(Post)
-        .options(load_only(Post.id, Post.title, Post.created_at, Post.updated_at))
-        .where(Post.published == False, Post.author_id == user["sub"])
-    )
+    query = select(Post).options(load_only(Post.id, Post.title, Post.created_at, Post.updated_at))
+    current_user_id = current_user["sub"]
+    # Budujemy listę warunków tylko wtedy, gdy parametr nie jest None
+    conditions = []
+    if author_id:
+        conditions.append(Post.author_id == author_id)
+    
+    if published is not None:
+        if published:
+            conditions.append(Post.published == True)
+        else:
+            conditions.append(and_(Post.published == False, Post.author_id == current_user_id))
+    else:
+        # Jeśli nie podano filtru published, chcemy wszystkie opublikowane posty
+        # oraz nieopublikowane, ale tylko należące do aktualnie zalogowanego użytkownika.
+        conditions.append(
+            or_(
+                Post.published == True,
+                and_(Post.published == False, Post.author_id == current_user_id)
+            )
+        )
+
+    if conditions:
+        print(condition.expression for condition in conditions)
+        query = query.where(and_(*conditions))
+    
+    result = await db.execute(query)
     posts = result.scalars().all()
     return posts
 
-
-@router.get("/search", response_model=List[dict])
+@router.get(BASE_API_PATH + "/search", response_model=List[dict])
 async def search_posts(
     query: Optional[str] = Query(None, description="Fraza wyszukiwania"), size: int = 10
 ):
@@ -165,7 +184,7 @@ async def search_posts(
 
     try:
         es = get_es_instance()
-        res = es.search(index="posts", body=search_body)
+        res = await es.search(index="posts", body=search_body)
     except NotFoundError:
         raise HTTPException(
             status_code=404, detail="Indeks posts nie został znaleziony"
@@ -215,6 +234,41 @@ async def update_post(
     await db.commit()
     await db.refresh(post)
 
+    await es_index_post(post)
+
+    return post
+
+
+@router.patch(BASE_API_PATH + "/posts/{post_id}", response_model=PostOut)
+async def patch_post(
+    post_id: int,
+    post_patch: PostPatch,
+    user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(
+        select(Post).where(Post.id == post_id, Post.author_id == user["sub"])
+    )
+    post = result.scalars().first()
+    if not post:
+        raise HTTPException(status_code=404, detail="Post nie znaleziony")
+    
+    # Aktualizujemy tylko te pola, które zostały przesłane (nie są None)
+    if post_patch.title is not None:
+        post.title = post_patch.title
+    if post_patch.content is not None:
+        post.content = post_patch.content
+    if post_patch.short_description is not None:
+        post.short_description = post_patch.short_description
+    if post_patch.keywords is not None:
+        post.keywords = post_patch.keywords
+    if post_patch.published is not None:
+        post.published = post_patch.published
+
+    await db.commit()
+    await db.refresh(post)
+
+    # Indeksujemy zaktualizowany post w Elasticsearch
     await es_index_post(post)
 
     return post

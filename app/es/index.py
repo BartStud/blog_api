@@ -14,40 +14,53 @@ async def create_index_if_not_exists(es_client, index_name, index_body):
 
 async def init_post_index(es_client):
     index_name = "posts"
-    index_body = (
-        {
-            "settings": {
-                "number_of_shards": 1,
-                "number_of_replicas": 0,
-            },
-            "mappings": {
-                "properties": {
-                    "id": {"type": "integer"},
-                    "author_id": {"type": "keyword"},
-                    "title": {
-                        "type": "text",
-                        "analyzer": "polish",
-                        "fields": {"raw": {"type": "keyword"}},
-                    },
-                    "short_description": {
-                        "type": "text",
-                        "analyzer": "polish",
-                        "fields": {"raw": {"type": "keyword"}},
-                    },
-                    "content": {"type": "text", "analyzer": "polish"},
-                    "published": {"type": "boolean"},
-                    "created_at": {"type": "date"},
-                    "updated_at": {"type": "date"},
-                    "published_at": {"type": "date"},
-                    "keywords": {
-                        "type": "text",
-                        "analyzer": "standard",
-                        "fields": {"raw": {"type": "keyword"}},
-                    },
+    index_body = {
+    "settings": {
+        "number_of_shards": 1,
+        "number_of_replicas": 0,
+        "analysis": {
+            "analyzer": {
+                "polish": {
+                    "type": "custom",
+                    "tokenizer": "standard",
+                    "filter": ["lowercase", "polish_stop"]
                 }
             },
-        },
-    )
+            "filter": {
+                "polish_stop": {
+                    "type": "stop",
+                    "stopwords": "_polish_"  # wbudowana lista stopwords dla języka polskiego
+                }
+            }
+        }
+    },
+    "mappings": {
+        "properties": {
+            "id": {"type": "integer"},
+            "author_id": {"type": "keyword"},
+            "title": {
+                "type": "text",
+                "analyzer": "polish",
+                "fields": {"raw": {"type": "keyword"}}
+            },
+            "short_description": {
+                "type": "text",
+                "analyzer": "polish",
+                "fields": {"raw": {"type": "keyword"}}
+            },
+            "content": {"type": "text", "analyzer": "polish"},
+            "published": {"type": "boolean"},
+            "created_at": {"type": "date"},
+            "updated_at": {"type": "date"},
+            "published_at": {"type": "date"},
+            "keywords": {
+                "type": "text",
+                "analyzer": "standard",
+                "fields": {"raw": {"type": "keyword"}}
+            }
+        }
+    }
+}
 
     await create_index_if_not_exists(es_client, index_name, index_body)
     return True
